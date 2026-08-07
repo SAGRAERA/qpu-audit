@@ -1,0 +1,6 @@
+-r requirements.txt
+
+# Decodes QPY circuit payloads down to the gate level.
+# Qiskit Runtime transmits circuits as QPY binary rather than OpenQASM, so this is
+# required for depth, 2-qubit gate counts, and gate histograms.
+qiskit>=1.0

@@ -1,0 +1,80 @@
+# ---------------------------------------------------------------------------
+# qpu-audit tuning
+#
+# Copy to config/config.toml to override. Without that file these defaults apply.
+# Credentials do NOT belong here — they go in .env
+# ---------------------------------------------------------------------------
+
+[collect]
+# How far back to reach on the first run, in days. Later runs are incremental.
+lookback_days = 30
+# Maximum job details fetched per run. This is the only way to obtain circuits and
+# costs one API call per job, so it is capped. Run repeatedly to catch up.
+job_detail_max_per_run = 500
+request_timeout = 30
+max_retries = 5
+page_size = 200
+
+[analyze]
+window_days = 30
+# Users excluded from analysis (user_id or the label from user_map.csv).
+whitelist = []
+
+[rules]
+# Repeats below this count are never flagged.
+min_repeats_for_flag = 5
+# Median gap at or under this many minutes counts as "short interval".
+short_interval_minutes = 30
+# Coefficient of variation of submission gaps below this reads as script/bot.
+interval_regularity_cv = 0.20
+interval_min_samples = 8
+# If the second half of a parameter trajectory moves less than this fraction of the
+# first half, it is an optimizer loop and therefore legitimate.
+convergence_ratio = 0.60
+waste_seconds_warn = 300.0
+top_circuit_share_warn = 0.50
+unique_ratio_warn = 0.30
+
+# --- suspected overuse ---
+# Instance share at which the signal starts firing.
+overuse_share_floor = 0.30
+# Share at which it reaches full strength.
+overuse_share_full = 0.50
+
+# --- usage spike ---
+# Month-over-month multiple that triggers the signal.
+usage_spike_ratio = 2.0
+
+# --- burst submission ---
+# Jobs submitted within 60 seconds before the signal fires.
+burst_size_warn = 10
+
+[score]
+# Weights per risk signal. Each component is normalised to 0..1 first.
+# Total = 100 = maximum risk score.
+#
+# Signals fall into three classes, because "is this work legitimate?" and "does this
+# behaviour harm others?" are different questions:
+#
+#   WASTE (60)   QPU time burned on nothing. Questions the work itself.
+#   QUEUE (20)   Harms other users whether or not the work is legitimate. A burst of
+#                a thousand jobs monopolises the queue even when the science is
+#                impeccable — and the remedy ("use batch") does not question it.
+#   CONTEXT (20) Information only. Fires on ordinary situations — a new user, or a
+#                7-qubit state tomography that legitimately needs 3^7 = 2187 circuits
+#                and therefore maxes out share, burst and interval regularity at once.
+#                Never sufficient grounds for action on its own.
+duplicate_waste     = 30   # unexplained repeated execution         (waste)
+top_circuit_share   = 15   # single-circuit concentration           (waste)
+trivial_circuit     = 10   # non-entangling circuits                (waste)
+failure_resubmit    = 5    # resubmitting a failed payload          (waste)
+burst_submission    = 12   # many jobs within 60 seconds            (queue)
+no_session          = 8    # repeated work without session/batch    (queue)
+overuse             = 12   # share of QPU time                      (context)
+regular_interval    = 5    # mechanical submission intervals        (context)
+usage_spike         = 3    # month-over-month growth                (context)
+
+[report]
+top_users = 20
+top_circuits_per_user = 5
+qasm_snippet_lines = 40

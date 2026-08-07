@@ -1,0 +1,25 @@
+# ---------------------------------------------------------------------------
+# Multiple Qiskit Runtime instances
+#
+# Copy to config/instances.toml. That file is git-ignored, because a CRN contains
+# your IBM Cloud account ID.
+#
+# Only needed when auditing more than one instance. With a single instance, set
+# IBM_QUANTUM_CRN in .env and ignore this file entirely.
+#
+# The same API key is used for every instance — the API selects one per request
+# through the Service-CRN header. Permissions can differ between instances, so
+# `probe` reports each one separately.
+# ---------------------------------------------------------------------------
+
+[[instance]]
+name = "research"
+crn  = "crn:v1:bluemix:public:quantum-computing:us-east:a/<account>:<instance>::"
+
+[[instance]]
+name = "teaching"
+crn  = "crn:v1:bluemix:public:quantum-computing:us-east:a/<account>:<instance>::"
+
+# [[instance]]
+# name = "collaboration"
+# crn  = "crn:v1:bluemix:public:quantum-computing:eu-de:a/<account>:<instance>::"

@@ -1,0 +1,7 @@
+# qpu-audit — base dependencies
+# Requires Python 3.11+ (tomllib is used from the standard library)
+httpx>=0.27
+
+# Circuit decoding (QPY) needs qiskit. The tool runs without it, but falls back
+# to header-level metadata and cannot report gate counts, depth, or 2-qubit gates.
+#   pip install -r requirements-full.txt
