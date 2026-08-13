@@ -92,6 +92,18 @@ The same API key is used throughout; the API selects an instance per request thr
 
 With a single instance, keep using `IBM_QUANTUM_CRN` and ignore this file. Permissions can differ between instances, so `probe` reports each one separately.
 
+Rather than collecting CRNs by hand, ask the account:
+
+```bash
+python -m qpu_audit instances --discover
+```
+
+This lists the Qiskit Runtime instances in your IBM Cloud account and appends any that are missing, using their console names. Existing entries are never renamed and **never removed** — an instance you were granted access to individually does not appear in the account listing at all, and deleting it would orphan everything already collected against it. Those are verified by direct lookup instead and reported separately.
+
+Use `--dry-run` to see what it would add. Being listed does not imply you can read a given instance's workloads, so run `probe` afterwards.
+
+One limit worth knowing: an API key belongs to a single account. If your identity is a member of several, instances in the others need their own key — `--discover` says so when it detects this.
+
 ### Run it
 
 ```bash
@@ -126,6 +138,8 @@ Generates:
 
 The report is a self-contained HTML file with no external dependencies. It can be opened directly in a browser or shared as a standalone file.
 
+Every ranking table is sortable — click a column heading to re-rank by it. Which QPU is "busiest" depends on whether you mean hours, job count, or number of users, and those give different answers, so the ordering is the reader's choice rather than a fixed one. Sorting runs on the underlying values, not the displayed text, so units, thousands separators and the language switcher do not disturb it.
+
 A sample is committed at [`docs/sample-report.html`](docs/sample-report.html), generated entirely from the synthetic `selftest` scenarios. It contains no real user IDs, instances, or circuits. Regenerate it with:
 
 ```bash
@@ -159,6 +173,32 @@ Circuit names, user IDs, backends, and numbers are of course not translated.
 
 `i18n.missing_keys("de")` lists what a language still needs.
 
+### Choosing a period
+
+By default `analyze` and `report` cover a rolling window (`analyze.window_days`, 30 by default). Any explicit period works instead:
+
+```bash
+python -m qpu_audit report --from 2026-07-01 --to 2026-07-31
+```
+
+`--to` is inclusive: a bare date means the end of that day, in UTC.
+
+Two periods can be compared directly:
+
+```bash
+python -m qpu_audit analyze --from 2026-07-16 --to 2026-07-31 --vs-from 2026-07-01 --vs-to 2026-07-15
+```
+
+```bash
+python -m qpu_audit report --from 2026-08-01 --vs prev
+```
+
+`--vs prev` uses the equally long stretch immediately before the analysed window.
+
+Both periods go through the same analysis, so the change column reflects verdicts rather than raw usage. A user present in only one period still appears — somebody starting or stopping is exactly the change worth seeing.
+
+One caveat: a period that predates your first `collect` shows as empty, not as zero usage. The tool cannot distinguish "nobody ran anything" from "nothing was collected yet".
+
 ```bash
 python -m qpu_audit usage --csv
 ```
@@ -172,6 +212,21 @@ python -m qpu_audit usage --by-instance
 Shows QPU usage per user per instance, with the share of each instance alongside the account-wide total.
 
 Both views are needed. Per-instance figures reveal someone monopolising a single instance; the total column reveals someone spread across all of them who nevertheless dominates the account. Neither is visible from the other.
+
+```bash
+python -m qpu_audit usage --by-backend
+```
+
+Ranks the QPUs by absorbed time and shows who took it:
+
+```
+ #  backend                  hours   share    jobs  users  heaviest user
+ 1  ibm_yonsei               10.76   40.5%     249      3  ... (62%)
+ 2  ibm_miami                 6.97   26.2%      45      8  ... (94%)
+ 3  ibm_marrakesh             5.49   20.7%     736      4  ... (91%)
+```
+
+Followed by the same user × backend matrix. A high *heaviest user* share means one person effectively owns that machine, which is worth knowing before anyone else plans work on it. Reading a row shows whether someone spreads across machines or camps on one; reading a column shows whether a machine serves the group or one person.
 
 > **Start collecting early.** 
 > IBM does not retain job payloads indefinitely. Once a circuit payload has aged out, it cannot be recovered through the API.
@@ -193,12 +248,13 @@ For example, on Windows, Task Scheduler can run the following command every 15 m
 
 | Command | What it does |
 |---|---|
-| `probe` | Reports which API endpoints and permissions are available |
+| `probe` | Reports which API endpoints and permissions are available, per instance |
 | `collect` | Incrementally syncs workloads, job details, and circuit payloads (`--instance` limits it to one) |
 | `reindex` | Recompute fingerprints from stored payloads — **no API calls** |
-| `analyze` | Prints a console summary of risk ranking and queue impact |
-| `report` | Generates the full HTML report (`--csv` also writes CSV output) |
-| `usage` | Shows the monthly usage ledger per user (`--by-instance` breaks it down per instance) |
+| `analyze` | Prints a console summary of risk ranking and queue impact (`--from`/`--to`/`--vs`) |
+| `report` | Generates the full HTML report (`--csv` also writes CSV output; same period flags) |
+| `instances` | Lists configured instances; `--discover` finds more in your IBM Cloud account |
+| `usage` | Monthly usage ledger per user (`--by-instance`, `--by-backend` break it down further) |
 | `users` | List observed user IDs; `--sync` resolves names when possible|
 | `status` | Shows local database state and collection backlog |
 | `selftest` | Tests detection logic using synthetic scenarios - no credentials required |
@@ -319,7 +375,7 @@ Randomized benchmarking, calibration, and related workflows legitimately use Cli
 
 ## Risk signals
 
-The risk score ranges from 0 to 100 and combines nine signals.
+The risk score ranges from 0 to 100 and combines nine signals in three classes.
 
 Signals are divided into three classes, because *"is this work legitimate?"* and *"does this behaviour harm others?"* are separate questions:
 

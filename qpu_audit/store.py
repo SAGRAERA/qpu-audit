@@ -132,6 +132,17 @@ CREATE TABLE IF NOT EXISTS usage_monthly_instance (
     PRIMARY KEY (month, user_id, instance)
 );
 
+-- Same ledger again, split by backend. Which QPU absorbed the time, and who took it.
+CREATE TABLE IF NOT EXISTS usage_monthly_backend (
+    month               TEXT NOT NULL,        -- YYYY-MM
+    user_id             TEXT NOT NULL,
+    backend             TEXT NOT NULL,
+    jobs                INTEGER,
+    qpu_seconds         REAL,
+    updated_at          TEXT,
+    PRIMARY KEY (month, user_id, backend)
+);
+
 CREATE TABLE IF NOT EXISTS meta (
     key                 TEXT PRIMARY KEY,
     value               TEXT
@@ -149,6 +160,8 @@ CREATE INDEX IF NOT EXISTS idx_pubs_structural   ON pubs(structural_hash);
 CREATE INDEX IF NOT EXISTS idx_pubs_intent       ON pubs(intent_hash);
 CREATE INDEX IF NOT EXISTS idx_usage_month       ON usage_monthly(month);
 CREATE INDEX IF NOT EXISTS idx_usage_inst_month  ON usage_monthly_instance(month);
+CREATE INDEX IF NOT EXISTS idx_usage_be_month    ON usage_monthly_backend(month);
+CREATE INDEX IF NOT EXISTS idx_workloads_backend ON workloads(backend);
 CREATE INDEX IF NOT EXISTS idx_workloads_inst    ON workloads(instance);
 """
 

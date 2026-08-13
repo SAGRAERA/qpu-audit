@@ -344,6 +344,58 @@ class UserReport:
 
 
 @dataclass
+class UserDelta:
+    """One user's figures in two periods, for side-by-side comparison."""
+
+    user_id: str
+    label: str
+    seconds_a: float = 0.0
+    seconds_b: float = 0.0
+    jobs_a: int = 0
+    jobs_b: int = 0
+    waste_a: float = 0.0
+    waste_b: float = 0.0
+    score_a: float = 0.0
+    score_b: float = 0.0
+
+    @staticmethod
+    def _ratio(new: float, old: float) -> float | None:
+        """None when there is nothing meaningful to divide by."""
+        if old <= 0:
+            return float("inf") if new > 0 else None
+        return new / old
+
+    @property
+    def seconds_ratio(self) -> float | None:
+        return self._ratio(self.seconds_a, self.seconds_b)
+
+    @property
+    def waste_ratio(self) -> float | None:
+        return self._ratio(self.waste_a, self.waste_b)
+
+    @property
+    def seconds_delta(self) -> float:
+        return self.seconds_a - self.seconds_b
+
+
+@dataclass
+class PeriodComparison:
+    """Two analysed periods lined up. Period A is the one being reported on."""
+
+    a_start: datetime
+    a_end: datetime
+    b_start: datetime
+    b_end: datetime
+    users: list[UserDelta] = field(default_factory=list)
+    total_a: float = 0.0
+    total_b: float = 0.0
+
+    @property
+    def total_ratio(self) -> float | None:
+        return UserDelta._ratio(self.total_a, self.total_b)
+
+
+@dataclass
 class Analysis:
     window_days: int
     generated_at: datetime
@@ -358,6 +410,19 @@ class Analysis:
     # instance CRN -> total QPU seconds in the window, and CRN -> friendly name
     instances: dict[str, float] = field(default_factory=dict)
     instance_names: dict[str, str] = field(default_factory=dict)
+    # Explicit window actually analysed, and an optional second period to compare to.
+    period_start: datetime | None = None
+    period_end: datetime | None = None
+    comparison: PeriodComparison | None = None
+
+    @property
+    def period_label(self) -> str:
+        if self.period_start and self.period_end:
+            return (
+                f"{self.period_start.strftime('%Y-%m-%d')} to "
+                f"{self.period_end.strftime('%Y-%m-%d')}"
+            )
+        return f"last {self.window_days} days"
 
     def instance_label(self, crn: str) -> str:
         return self.instance_names.get(crn) or (crn.rsplit(":", 2)[-2][:12] if ":" in crn else crn)
@@ -367,7 +432,28 @@ class Analysis:
 # loading
 # ---------------------------------------------------------------------------
 
-def load_runs(store: Any, since: datetime) -> list[Run]:
+def parse_day(value: str, end_of_day: bool = False) -> datetime:
+    """Parse a YYYY-MM-DD (or full ISO) date as UTC.
+
+    ``--to`` is inclusive: given a bare date it becomes 23:59:59 of that day, because
+    "to 2026-07-31" meaning "up to 2026-07-31 00:00" silently drops a day's work.
+    """
+    text = value.strip()
+    try:
+        if len(text) == 10:
+            stamp = datetime.strptime(text, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            if end_of_day:
+                stamp = stamp.replace(hour=23, minute=59, second=59, microsecond=999999)
+            return stamp
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except ValueError as exc:
+        raise ValueError(
+            f"Could not read {value!r} as a date. Use YYYY-MM-DD, for example 2026-07-01."
+        ) from exc
+
+
+def load_runs(store: Any, since: datetime, until: datetime | None = None) -> list[Run]:
     rows = store.query(
         """
         SELECT
@@ -391,10 +477,15 @@ def load_runs(store: Any, since: datetime) -> list[Run]:
         LEFT JOIN circuits c ON c.exact_hash = p.exact_hash
         WHERE w.mode = 'job'
           AND w.created >= ?
+          AND (? IS NULL OR w.created <= ?)
           AND w.user_id IS NOT NULL
         ORDER BY w.created ASC
         """,
-        (since.isoformat().replace("+00:00", "Z"),),
+        (
+            since.isoformat().replace("+00:00", "Z"),
+            until.isoformat().replace("+00:00", "Z") if until else None,
+            until.isoformat().replace("+00:00", "Z") if until else None,
+        ),
     )
 
     runs: list[Run] = []
@@ -964,16 +1055,35 @@ def _month_ratios(store: Any) -> dict[str, float]:
     return ratios
 
 
-def analyze(store: Any, settings: Any, user_map: Any) -> Analysis:
+def analyze(
+    store: Any,
+    settings: Any,
+    user_map: Any,
+    since: datetime | None = None,
+    until: datetime | None = None,
+) -> Analysis:
+    """Analyse one time window.
+
+    Without ``since`` the window is the rolling ``analyze.window_days``. Passing
+    explicit bounds analyses exactly that period, which is what makes comparing two
+    named periods possible.
+    """
     analyze_cfg = settings.section("analyze")
     rules = settings.section("rules")
     weights = settings.section("score")
 
     window_days = int(analyze_cfg.get("window_days", 30))
     whitelist = {str(x) for x in analyze_cfg.get("whitelist", [])}
-    since = datetime.now(timezone.utc) - timedelta(days=window_days)
+    if since is None:
+        since = datetime.now(timezone.utc) - timedelta(days=window_days)
+        explicit = False
+    else:
+        explicit = True
+    period_end = until or datetime.now(timezone.utc)
+    if explicit or until:
+        window_days = max((period_end - since).days, 1)
 
-    runs = load_runs(store, since)
+    runs = load_runs(store, since, until)
 
     # Session/batch usage is settled by workloads.mode. A user who never created a
     # session or batch container cannot have jobs inside one, regardless of whether
@@ -1054,7 +1164,56 @@ def analyze(store: Any, settings: Any, user_map: Any) -> Analysis:
         session_data_available=not container_owners or session_link_known,
         instances=instance_totals,
         instance_names=instance_names,
+        period_start=since,
+        period_end=period_end,
     )
+
+
+def compare_periods(
+    store: Any,
+    settings: Any,
+    user_map: Any,
+    a_start: datetime,
+    a_end: datetime,
+    b_start: datetime,
+    b_end: datetime,
+) -> tuple[Analysis, PeriodComparison]:
+    """Analyse period A, then line it up against period B.
+
+    Both periods go through the same analysis, so the comparison inherits every
+    verdict rule rather than re-deriving totals from raw usage.
+    """
+    analysis_a = analyze(store, settings, user_map, a_start, a_end)
+    analysis_b = analyze(store, settings, user_map, b_start, b_end)
+
+    deltas: dict[str, UserDelta] = {}
+
+    for user in analysis_a.users:
+        deltas[user.user_id] = UserDelta(
+            user_id=user.user_id, label=user.label,
+            seconds_a=user.seconds, jobs_a=user.jobs,
+            waste_a=user.flagged_waste_seconds, score_a=user.score,
+        )
+    for user in analysis_b.users:
+        entry = deltas.get(user.user_id)
+        if entry is None:
+            # Present in the earlier period but absent from the later one — someone
+            # who stopped. Dropping them would hide exactly the change worth seeing.
+            entry = UserDelta(user_id=user.user_id, label=user.label)
+            deltas[user.user_id] = entry
+        entry.seconds_b = user.seconds
+        entry.jobs_b = user.jobs
+        entry.waste_b = user.flagged_waste_seconds
+        entry.score_b = user.score
+
+    comparison = PeriodComparison(
+        a_start=a_start, a_end=a_end, b_start=b_start, b_end=b_end,
+        users=sorted(deltas.values(), key=lambda d: -max(d.seconds_a, d.seconds_b)),
+        total_a=analysis_a.total_seconds,
+        total_b=analysis_b.total_seconds,
+    )
+    analysis_a.comparison = comparison
+    return analysis_a, comparison
 
 
 def abusive_groups(analysis: Analysis) -> Iterable[tuple[UserReport, CircuitGroup]]:

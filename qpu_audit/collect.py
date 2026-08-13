@@ -295,6 +295,7 @@ def run_collect(
         entries = usage_module.compute_monthly(store)
         usage_module.persist(store, entries)
         usage_module.persist_by_instance(store, usage_module.compute_monthly_by_instance(store))
+        usage_module.persist_by_backend(store, usage_module.compute_monthly_by_backend(store))
         result["monthly_rows"] = len(entries)
 
         result["totals"] = store.counts()

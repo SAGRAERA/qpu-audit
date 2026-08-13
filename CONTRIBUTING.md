@@ -74,10 +74,19 @@ re-fetching thousands of jobs.
 3. Add the weight to `config.example.toml` and the defaults in `config.py`.
 4. Confirm every pre-existing scenario still passes.
 5. Document it in the README's risk-signal table, and classify it honestly as
-   *actionable* or *context*.
+   *waste*, *queue* or *context*.
 
-If a signal fires on legitimate large-scale experiments, it is a context signal.
-Say so rather than tuning a threshold until the inconvenient case disappears.
+Choosing the class is the part worth thinking about:
+
+- **waste** — the work itself is questionable
+- **queue** — others are harmed regardless of whether the work is legitimate, and the
+  remedy does not question the science
+- **context** — fires in ordinary situations and justifies nothing alone
+
+If a signal fires on legitimate large-scale experiments *and* the remedy would be to
+stop doing the science, it is context. If it fires on legitimate work but the remedy
+is a cheap change of habit, it is queue. Say so rather than tuning a threshold until
+the inconvenient case disappears.
 
 ## Translations
 

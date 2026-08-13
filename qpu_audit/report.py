@@ -25,10 +25,12 @@ from .store import Store
 from .usage import (
     UsageLedger,
     compute_monthly,
+    compute_monthly_by_backend,
     compute_monthly_by_instance,
     load_breakdown,
     load_ledger,
     persist,
+    persist_by_backend,
     persist_by_instance,
 )
 
@@ -128,6 +130,67 @@ i.tr{display:none;font-style:normal}
   margin:-8px 0 8px;font-size:13px;color:var(--muted)}
 .langbar select{font:inherit;color:var(--ink);background:var(--panel);
   border:1px solid var(--line);border-radius:6px;padding:3px 8px}
+
+/* Sortable tables. Ranking depends on which column you care about — time, job
+   count, user count — so the ordering is the reader's choice, not a fixed one. */
+th.sortable-th{cursor:pointer;user-select:none;white-space:nowrap}
+th.sortable-th:hover{color:var(--accent)}
+th.sortable-th::after{content:"";opacity:.35;font-size:10px}
+th.sortable-th:hover::after{content:" ⇅";opacity:.6}
+th.sortable-th[data-dir="desc"]::after{content:" ▼";opacity:1;color:var(--accent)}
+th.sortable-th[data-dir="asc"]::after{content:" ▲";opacity:1;color:var(--accent)}
+.sorthint{color:var(--muted);font-size:12px;margin:6px 0 0}
+"""
+
+SORT_SCRIPT = """
+(function(){
+  // Sort on data-sort, never on the rendered text: cells carry units, thousands
+  // separators and four languages at once, none of which sort meaningfully.
+  function val(row, i){
+    var td = row.children[i];
+    if(!td) return '';
+    var d = td.getAttribute('data-sort');
+    return d !== null ? d : td.textContent.trim();
+  }
+  function cmp(a, b){
+    var na = parseFloat(a), nb = parseFloat(b);
+    var aN = a !== '' && !isNaN(na), bN = b !== '' && !isNaN(nb);
+    if(aN && bN) return na - nb;
+    if(aN) return 1;
+    if(bN) return -1;
+    return String(a).localeCompare(String(b));
+  }
+  function renumber(tbody){
+    var n = 1;
+    Array.prototype.forEach.call(tbody.rows, function(r){
+      var c = r.querySelector('.rownum');
+      if(c) c.textContent = n++;
+    });
+  }
+  function attach(table){
+    if(!table.tHead || !table.tBodies.length) return;
+    var ths = table.tHead.rows[table.tHead.rows.length - 1].cells;
+    Array.prototype.forEach.call(ths, function(th, i){
+      th.classList.add('sortable-th');
+      th.addEventListener('click', function(){
+        var tbody = table.tBodies[0];
+        var desc = th.getAttribute('data-dir') !== 'desc';
+        Array.prototype.forEach.call(ths, function(o){ o.removeAttribute('data-dir'); });
+        th.setAttribute('data-dir', desc ? 'desc' : 'asc');
+        var rows = Array.prototype.slice.call(tbody.rows);
+        rows.sort(function(x, y){
+          var r = cmp(val(x, i), val(y, i));
+          return desc ? -r : r;
+        });
+        rows.forEach(function(r){ tbody.appendChild(r); });
+        renumber(tbody);
+      });
+    });
+  }
+  document.addEventListener('DOMContentLoaded', function(){
+    Array.prototype.forEach.call(document.querySelectorAll('table.sortable'), attach);
+  });
+})();
 """
 
 LANG_SCRIPT = """
@@ -216,6 +279,7 @@ def render(
     families: dict[str, list[FamilyDiff]] | None = None,
     ledger: UsageLedger | None = None,
     breakdown: Any = None,
+    backends: Any = None,
 ) -> str:
     sections = report_sections.build(esc, tr, trm)
     top_users = int(settings_report.get("top_users", 20))
@@ -230,7 +294,7 @@ def render(
     )
 
     cards = [
-        ("card_window", f"{analysis.window_days}", tr("card_window_note", jobs=f"{analysis.total_jobs:,}")),
+        ("card_window", analysis.period_label, tr("card_window_note", jobs=f"{analysis.total_jobs:,}")),
         ("card_qpu", _fmt_seconds(analysis.total_seconds), tr("card_qpu_note", runs=f"{analysis.total_runs:,}")),
         ("card_waste", _fmt_seconds(total_wasted), tr("card_waste_note", pct=waste_pct)),
         ("card_users", f"{len(analysis.users)}", tr("card_users_note", n=len(flagged))),
@@ -257,17 +321,18 @@ def render(
 <title>qpu-audit</title>
 <style>{CSS}</style>
 <script>{script}</script>
+<script>{SORT_SCRIPT}</script>
 </head><body><div class="wrap">
 {_lang_selector()}
 <h1>{tr('title')}</h1>
-<p class="sub">{tr('generated', when=generated, days=analysis.window_days)}</p>
+<p class="sub">{tr('generated', when=generated, days=analysis.window_days)} · {esc(analysis.period_label)}</p>
 
 <div class="cards">{card_html}</div>
 {notes}
 
 <h2>{tr('h_ranking')}</h2>
 <p class="sub">{tr('p_ranking')}</p>
-<div class="scroll"><table>
+<div class="scroll"><table class="sortable">
 <thead><tr>
   <th>{tr('th_num')}</th><th>{tr('th_user')}</th><th>{tr('th_userid')}</th>
   <th>{tr('th_score')}</th><th>{tr('th_jobs')}</th><th>{tr('th_qpu')}</th>
@@ -280,10 +345,17 @@ def render(
   <span>{tr('lg_share')}</span><span>{tr('lg_unexplained')}</span>
   <span>{tr('lg_unique')}</span><span>{tr('lg_cv')}</span>
 </div>
+<p class="sorthint">{tr('sort_hint')}</p>
+
+{sections["compare_section"](analysis.comparison)}
 
 {sections["usage_section"](ledger)}
 
 {sections["instance_section"](breakdown)}
+
+{sections["backend_ranking"](backends)}
+
+{sections["backend_section"](backends)}
 
 {sections["queue_section"](queue_impacts or [], labels)}
 
@@ -311,17 +383,21 @@ def write_report(
     families: dict[str, list[FamilyDiff]] = {}
     ledger: UsageLedger | None = None
     breakdown = None
+    backends = None
 
     # The monthly ledgers are always refreshed and included — they are the long-term
     # value, and they survive IBM dropping the underlying workloads.
     try:
         persist(store, compute_monthly(store))
         persist_by_instance(store, compute_monthly_by_instance(store))
+        persist_by_backend(store, compute_monthly_by_backend(store))
         labels = {u.user_id: u.label for u in analysis.users}
         ledger = load_ledger(store, months=12)
         ledger.labels = labels
         breakdown = load_breakdown(store, months=12, names=analysis.instance_names)
         breakdown.labels = labels
+        backends = load_breakdown(store, months=12, dimension="backend")
+        backends.labels = labels
     except Exception:  # noqa: BLE001
         ledger = None
 
@@ -335,7 +411,9 @@ def write_report(
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(
-        render(analysis, store, report_cfg, queue_impacts, families, ledger, breakdown),
+        render(
+            analysis, store, report_cfg, queue_impacts, families, ledger, breakdown, backends
+        ),
         encoding="utf-8",
     )
     return out_path

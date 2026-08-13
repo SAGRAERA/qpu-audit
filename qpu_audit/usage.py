@@ -154,36 +154,45 @@ def compute_monthly(store: Any) -> list[MonthlyUsage]:
     ]
 
 
+# The two breakdown dimensions share one implementation: they differ only in which
+# workload column they group by and which ledger table they land in.
+DIMENSIONS = {
+    "instance": ("usage_monthly_instance", "instance"),
+    "backend": ("usage_monthly_backend", "backend"),
+}
+
+
 @dataclass
-class InstanceUsage:
-    """Usage for one (month, user, instance)."""
+class DimensionUsage:
+    """Usage for one (month, user, key), where key is an instance CRN or backend."""
 
     month: str
     user_id: str
-    instance: str
+    key: str
     jobs: int = 0
     qpu_seconds: float = 0.0
 
 
-def compute_monthly_by_instance(store: Any) -> list[InstanceUsage]:
+def compute_monthly_by(store: Any, dimension: str) -> list[DimensionUsage]:
+    _, column = DIMENSIONS[dimension]
     rows = store.query(
-        """
+        f"""
         SELECT substr(created, 1, 7)            AS month,
                user_id,
-               instance,
+               {column}                         AS key,
                COUNT(*)                         AS jobs,
                SUM(COALESCE(usage_seconds, 0))  AS qpu_seconds
         FROM workloads
         WHERE mode = 'job' AND user_id IS NOT NULL AND created IS NOT NULL
-          AND instance IS NOT NULL
-        GROUP BY month, user_id, instance
+          AND {column} IS NOT NULL
+        GROUP BY month, user_id, {column}
         """
     )
     return [
-        InstanceUsage(
+        DimensionUsage(
             month=row["month"],
             user_id=row["user_id"],
-            instance=row["instance"],
+            key=row["key"],
             jobs=int(row["jobs"] or 0),
             qpu_seconds=float(row["qpu_seconds"] or 0.0),
         )
@@ -192,87 +201,148 @@ def compute_monthly_by_instance(store: Any) -> list[InstanceUsage]:
     ]
 
 
-def persist_by_instance(store: Any, entries: list[InstanceUsage]) -> int:
+def persist_by(store: Any, dimension: str, entries: list[DimensionUsage]) -> int:
+    table, column = DIMENSIONS[dimension]
     now = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
     with store.tx() as conn:
         for entry in entries:
             conn.execute(
-                """
-                INSERT INTO usage_monthly_instance
-                    (month, user_id, instance, jobs, qpu_seconds, updated_at)
+                f"""
+                INSERT INTO {table}
+                    (month, user_id, {column}, jobs, qpu_seconds, updated_at)
                 VALUES (?,?,?,?,?,?)
-                ON CONFLICT(month, user_id, instance) DO UPDATE SET
+                ON CONFLICT(month, user_id, {column}) DO UPDATE SET
                     jobs        = excluded.jobs,
                     qpu_seconds = excluded.qpu_seconds,
                     updated_at  = excluded.updated_at
                 """,
-                (entry.month, entry.user_id, entry.instance, entry.jobs,
-                 entry.qpu_seconds, now),
+                (entry.month, entry.user_id, entry.key, entry.jobs, entry.qpu_seconds, now),
             )
     return len(entries)
 
 
-@dataclass
-class InstanceBreakdown:
-    """Usage per user per instance, plus totals in both directions.
+# Kept so existing call sites read naturally.
+def compute_monthly_by_instance(store: Any) -> list[DimensionUsage]:
+    return compute_monthly_by(store, "instance")
 
-    Both views are needed. Per-instance numbers reveal someone monopolising one
-    instance; the totals column reveals someone spread thinly across all of them who
-    nevertheless dominates the account.
+
+def persist_by_instance(store: Any, entries: list[DimensionUsage]) -> int:
+    return persist_by(store, "instance", entries)
+
+
+def compute_monthly_by_backend(store: Any) -> list[DimensionUsage]:
+    return compute_monthly_by(store, "backend")
+
+
+def persist_by_backend(store: Any, entries: list[DimensionUsage]) -> int:
+    return persist_by(store, "backend", entries)
+
+
+@dataclass
+class Breakdown:
+    """Usage per user per key, plus totals in both directions.
+
+    ``key`` is an instance CRN or a backend name depending on ``dimension``; the shape
+    of the question is identical either way. Both views are needed: the per-key
+    columns reveal someone monopolising a single instance or QPU, while the totals
+    column reveals someone spread thinly across all of them who nevertheless
+    dominates. Neither is visible from the other.
     """
 
-    instances: list[str] = field(default_factory=list)   # CRNs, heaviest first
+    dimension: str = "instance"
+    keys: list[str] = field(default_factory=list)        # heaviest first
     users: list[str] = field(default_factory=list)       # heaviest first
-    cells: dict[tuple[str, str], float] = field(default_factory=dict)  # (user, crn) -> seconds
+    cells: dict[tuple[str, str], float] = field(default_factory=dict)  # (user, key) -> seconds
+    jobs: dict[tuple[str, str], int] = field(default_factory=dict)
     labels: dict[str, str] = field(default_factory=dict)
-    names: dict[str, str] = field(default_factory=dict)  # CRN -> friendly name
+    names: dict[str, str] = field(default_factory=dict)  # key -> friendly name
 
-    def seconds(self, user_id: str, instance: str) -> float:
-        return self.cells.get((user_id, instance), 0.0)
+    def seconds(self, user_id: str, key: str) -> float:
+        return self.cells.get((user_id, key), 0.0)
 
     def user_total(self, user_id: str) -> float:
-        return sum(self.seconds(user_id, i) for i in self.instances)
+        return sum(self.seconds(user_id, k) for k in self.keys)
 
-    def instance_total(self, instance: str) -> float:
-        return sum(self.seconds(u, instance) for u in self.users)
+    def key_total(self, key: str) -> float:
+        return sum(self.seconds(u, key) for u in self.users)
 
     def grand_total(self) -> float:
-        return sum(self.instance_total(i) for i in self.instances)
+        return sum(self.key_total(k) for k in self.keys)
 
-    def user_share_of(self, user_id: str, instance: str) -> float:
-        total = self.instance_total(instance)
-        return self.seconds(user_id, instance) / total if total else 0.0
+    def user_share_of(self, user_id: str, key: str) -> float:
+        total = self.key_total(key)
+        return self.seconds(user_id, key) / total if total else 0.0
 
-    def instance_name(self, crn: str) -> str:
-        if crn in self.names:
-            return self.names[crn]
-        parts = [p for p in crn.split(":") if p]
-        return parts[-1][:12] if parts else crn
+    def key_share(self, key: str) -> float:
+        grand = self.grand_total()
+        return self.key_total(key) / grand if grand else 0.0
+
+    def key_users(self, key: str) -> list[str]:
+        """Users who ran on this key, heaviest first."""
+        return sorted(
+            (u for u in self.users if self.seconds(u, key) > 0),
+            key=lambda u: -self.seconds(u, key),
+        )
+
+    def top_user_of(self, key: str) -> tuple[str, float] | None:
+        """(user_id, share) for the heaviest user on this key."""
+        users = self.key_users(key)
+        if not users:
+            return None
+        return users[0], self.user_share_of(users[0], key)
+
+    def key_label(self, key: str) -> str:
+        if key in self.names:
+            return self.names[key]
+        if self.dimension == "instance":
+            parts = [p for p in key.split(":") if p]
+            return parts[-1][:12] if parts else key
+        return key
+
+    # Older name, kept so instance call sites keep reading naturally.
+    @property
+    def instances(self) -> list[str]:
+        return self.keys
+
+    def instance_total(self, key: str) -> float:
+        return self.key_total(key)
+
+    def instance_name(self, key: str) -> str:
+        return self.key_label(key)
+
+
+InstanceBreakdown = Breakdown
 
 
 def load_breakdown(
-    store: Any, months: int = 12, user_map: Any = None, names: dict[str, str] | None = None
-) -> InstanceBreakdown:
-    """Read the per-instance ledger for the last N months."""
+    store: Any,
+    months: int = 12,
+    user_map: Any = None,
+    names: dict[str, str] | None = None,
+    dimension: str = "instance",
+) -> Breakdown:
+    """Read a per-key ledger for the last N months."""
+    table, column = DIMENSIONS[dimension]
     rows = store.query(
-        "SELECT month, user_id, instance, qpu_seconds FROM usage_monthly_instance ORDER BY month"
+        f"SELECT month, user_id, {column} AS key, jobs, qpu_seconds FROM {table} ORDER BY month"
     )
-    breakdown = InstanceBreakdown(names=dict(names or {}))
+    breakdown = Breakdown(dimension=dimension, names=dict(names or {}))
     all_months = sorted({row["month"] for row in rows})
     keep = set(all_months[-months:]) if months > 0 else set(all_months)
 
     user_totals: dict[str, float] = {}
-    instance_totals: dict[str, float] = {}
+    key_totals: dict[str, float] = {}
     for row in rows:
         if row["month"] not in keep:
             continue
-        key = (row["user_id"], row["instance"])
+        cell = (row["user_id"], row["key"])
         seconds = float(row["qpu_seconds"] or 0.0)
-        breakdown.cells[key] = breakdown.cells.get(key, 0.0) + seconds
+        breakdown.cells[cell] = breakdown.cells.get(cell, 0.0) + seconds
+        breakdown.jobs[cell] = breakdown.jobs.get(cell, 0) + int(row["jobs"] or 0)
         user_totals[row["user_id"]] = user_totals.get(row["user_id"], 0.0) + seconds
-        instance_totals[row["instance"]] = instance_totals.get(row["instance"], 0.0) + seconds
+        key_totals[row["key"]] = key_totals.get(row["key"], 0.0) + seconds
 
-    breakdown.instances = sorted(instance_totals, key=lambda i: -instance_totals[i])
+    breakdown.keys = sorted(key_totals, key=lambda k: -key_totals[k])
     breakdown.users = sorted(user_totals, key=lambda u: -user_totals[u])
     if user_map is not None:
         breakdown.labels = {u: user_map.label(u) for u in breakdown.users}

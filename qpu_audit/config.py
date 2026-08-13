@@ -120,6 +120,29 @@ class Instance:
         return parts[-1][:12] if parts else self.crn[:12]
 
 
+def write_instances(root: Path, instances: list[Instance], header: str = "") -> Path:
+    """Rewrite config/instances.toml.
+
+    Names already present are the caller's responsibility to preserve — a name typed
+    by a person always beats one fetched from an API.
+    """
+    path = root / "config" / "instances.toml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "# Qiskit Runtime instances audited by qpu-audit.",
+        "# git-ignored: a CRN contains your IBM Cloud account ID.",
+        "#",
+        "# `name` is yours to choose - it appears in reports and in --instance <name>.",
+    ]
+    if header:
+        lines += ["#", *(f"# {line}" for line in header.splitlines())]
+    lines.append("")
+    for inst in instances:
+        lines += ["[[instance]]", f'name = "{inst.name}"', f'crn  = "{inst.crn}"', ""]
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
+
 def _load_instances(root: Path, fallback_crn: str) -> list[Instance]:
     """Read config/instances.toml, falling back to the single CRN from .env."""
     path = root / "config" / "instances.toml"

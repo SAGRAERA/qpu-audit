@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import usermap
@@ -96,38 +97,61 @@ def cmd_usage(args: argparse.Namespace) -> int:
         entries = usage_module.compute_monthly(store)
         usage_module.persist(store, entries)
         usage_module.persist_by_instance(store, usage_module.compute_monthly_by_instance(store))
+        usage_module.persist_by_backend(store, usage_module.compute_monthly_by_backend(store))
 
         umap = usermap.load(settings.user_map_path)
 
-        if args.by_instance:
-            breakdown = usage_module.load_breakdown(
-                store, args.months, umap, settings.instance_names
-            )
-            if not breakdown.instances:
-                print("No per-instance usage recorded yet. Run `collect` first.")
+        if args.by_instance or args.by_backend:
+            dimension = "backend" if args.by_backend else "instance"
+            names = None if args.by_backend else settings.instance_names
+            b = usage_module.load_breakdown(store, args.months, umap, names, dimension)
+            if not b.keys:
+                print(f"No per-{dimension} usage recorded yet. Run `collect` first.")
                 return 0
-            width = min(max((len(breakdown.labels.get(u, u)) for u in breakdown.users), default=10), 24)
-            names = [breakdown.instance_name(c) for c in breakdown.instances]
-            header = f"{'user':<{width}}" + "".join(f"{n[:13]:>14}" for n in names) + f"{'total':>12}"
-            print(f"\nQPU hours by instance · {len(breakdown.instances)} instances")
+
+            if args.by_backend:
+                print(f"\nQPU ranking · {len(b.keys)} backends")
+                header = (
+                    f"{'#':>2}  {'backend':<20} {'hours':>9} {'share':>7} "
+                    f"{'jobs':>7} {'users':>6}  heaviest user"
+                )
+                print(header)
+                print("-" * len(header))
+                for i, key in enumerate(b.keys, start=1):
+                    users = b.key_users(key)
+                    top = b.top_user_of(key)
+                    top_txt = (
+                        f"{b.labels.get(top[0], top[0])[:20]} ({top[1] * 100:.0f}%)"
+                        if top else "—"
+                    )
+                    jobs = sum(b.jobs.get((u, key), 0) for u in users)
+                    print(
+                        f"{i:>2}  {b.key_label(key)[:20]:<20} {b.key_total(key) / 3600:>9.2f} "
+                        f"{b.key_share(key) * 100:>6.1f}% {jobs:>7,} {len(users):>6}  {top_txt}"
+                    )
+                print()
+
+            width = min(max((len(b.labels.get(u, u)) for u in b.users), default=10), 24)
+            head = "".join(f"{b.key_label(k)[:13]:>14}" for k in b.keys)
+            header = f"{'user':<{width}}" + head + f"{'total':>12}"
+            print(f"QPU hours by {dimension} · {len(b.keys)} {dimension}s")
             print(header)
             print("-" * len(header))
-            for user in breakdown.users:
-                line = f"{breakdown.labels.get(user, user)[:width]:<{width}}"
-                for crn in breakdown.instances:
-                    seconds = breakdown.seconds(user, crn)
+            for user in b.users:
+                line = f"{b.labels.get(user, user)[:width]:<{width}}"
+                for key in b.keys:
+                    seconds = b.seconds(user, key)
                     if seconds:
-                        share = breakdown.user_share_of(user, crn) * 100
-                        line += f"{seconds / 3600:>9.2f}({share:>3.0f}%)"
+                        line += f"{seconds / 3600:>9.2f}({b.user_share_of(user, key) * 100:>3.0f}%)"
                     else:
                         line += f"{'—':>14}"
-                line += f"{breakdown.user_total(user) / 3600:>12.2f}"
+                line += f"{b.user_total(user) / 3600:>12.2f}"
                 print(line)
             print("-" * len(header))
-            total_line = f"{'instance total':<{width}}"
-            for crn in breakdown.instances:
-                total_line += f"{breakdown.instance_total(crn) / 3600:>14.2f}"
-            total_line += f"{breakdown.grand_total() / 3600:>12.2f}"
+            total_line = f"{dimension + ' total':<{width}}"
+            for key in b.keys:
+                total_line += f"{b.key_total(key) / 3600:>14.2f}"
+            total_line += f"{b.grand_total() / 3600:>12.2f}"
             print(total_line + "\n")
             return 0
 
@@ -200,6 +224,81 @@ def cmd_usage(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_instances(args: argparse.Namespace) -> int:
+    settings = load_settings()
+
+    if not args.discover:
+        print(f"\n{len(settings.instances)} instance(s) configured "
+              f"({settings.root / 'config' / 'instances.toml'})")
+        for inst in settings.instances:
+            print(f"  {inst.name:<24} ...{inst.crn[-44:]}")
+        print("\nRun with --discover to look for more in your IBM Cloud account.")
+        return 0
+
+    from .accounts import AccountLookupError, discover_instances, list_accounts, lookup_instance
+    from .config import Instance, write_instances
+
+    try:
+        discovered = discover_instances(settings)
+    except AccountLookupError as exc:
+        print(f"\n[discovery failed] {exc}\n", file=sys.stderr)
+        return 1
+
+    existing = {i.crn: i for i in settings.instances}
+    added = [d for d in discovered if d.crn not in existing]
+    listed = {d.crn for d in discovered}
+
+    print(f"\nFound {len(discovered)} Qiskit Runtime instance(s) by listing.")
+    for d in discovered:
+        mark = "already configured" if d.crn in existing else "NEW"
+        print(f"  {d.name:<24} {d.state:<8} {mark}")
+
+    # Instances granted to you individually do not appear in the listing, because that
+    # only covers resource groups you can enumerate. A direct lookup still resolves
+    # them, which both verifies the CRN and recovers the console name.
+    unlisted = [i for i in settings.instances if i.crn not in listed]
+    if unlisted:
+        print(f"\n{len(unlisted)} configured instance(s) are not in the listing "
+              "(granted individually, or in a resource group you cannot enumerate).")
+        print("Verifying each by direct lookup — they are kept either way:")
+        for inst in unlisted:
+            found = lookup_instance(settings, inst.crn)
+            if found:
+                same = found.name == inst.name
+                suffix = "" if same else f'  (console name: "{found.name}")'
+                print(f"  {inst.name:<24} {found.state:<8} verified{suffix}")
+            else:
+                print(f"  {inst.name:<24} {'?':<8} could not verify — keeping as configured")
+
+    accounts = list_accounts(settings)
+    if len(accounts) > 1:
+        print(f"\nThis identity belongs to {len(accounts)} accounts:")
+        for name, guid in accounts:
+            here = " (this key)" if guid in settings.crn else ""
+            print(f"  {name}{here}")
+        print("An API key is bound to one account, so instances in the others need their")
+        print("own key. Discovery cannot reach them.")
+
+    if not added:
+        print("\nNothing new to add.")
+        return 0
+
+    if args.dry_run:
+        print(f"\n--dry-run: would add {len(added)} instance(s). Nothing written.")
+        return 0
+
+    merged = list(settings.instances) + [Instance(name=d.name, crn=d.crn) for d in added]
+    path = write_instances(
+        settings.root, merged,
+        header="Discovered names come from the IBM Cloud console; rename freely.",
+    )
+    print(f"\nAdded {len(added)} instance(s) to {path}")
+    for d in added:
+        print(f"  + {d.name}")
+    print("\nRun `probe` next — being listed does not guarantee you can read its workloads.")
+    return 0
+
+
 def cmd_reindex(args: argparse.Namespace) -> int:
     from .collect import run_reindex
 
@@ -210,18 +309,84 @@ def cmd_reindex(args: argparse.Namespace) -> int:
     return 0
 
 
-def _load_analysis(settings):
+def _resolve_period(args) -> tuple:
+    """Turn --from/--to/--vs flags into concrete UTC bounds.
+
+    Returns (since, until, vs_since, vs_until); any of them may be None.
+    """
+    from datetime import timedelta
+
+    from .rules import parse_day
+
+    since = parse_day(args.date_from) if getattr(args, "date_from", None) else None
+    until = parse_day(args.date_to, end_of_day=True) if getattr(args, "date_to", None) else None
+    if since and until and until < since:
+        raise ValueError(f"--to ({args.date_to}) is before --from ({args.date_from}).")
+
+    vs_since = vs_until = None
+    vs = getattr(args, "vs", None)
+    if vs == "prev":
+        # The equally long stretch immediately before the analysed window.
+        if not since:
+            days = int(load_settings().section("analyze").get("window_days", 30))
+            since = datetime.now(timezone.utc) - timedelta(days=days)
+        end = until or datetime.now(timezone.utc)
+        span = end - since
+        vs_until = since - timedelta(seconds=1)
+        vs_since = vs_until - span
+    elif getattr(args, "vs_from", None):
+        vs_since = parse_day(args.vs_from)
+        vs_until = (
+            parse_day(args.vs_to, end_of_day=True)
+            if getattr(args, "vs_to", None)
+            else datetime.now(timezone.utc)
+        )
+        if vs_until < vs_since:
+            raise ValueError(f"--vs-to ({args.vs_to}) is before --vs-from ({args.vs_from}).")
+    return since, until, vs_since, vs_until
+
+
+def _load_analysis(settings, args=None):
+    from .rules import compare_periods
+
     store = Store(settings.db_path)
     umap = usermap.load(settings.user_map_path)
-    return store, run_analysis(store, settings, umap)
+
+    since = until = vs_since = vs_until = None
+    if args is not None:
+        since, until, vs_since, vs_until = _resolve_period(args)
+
+    if vs_since is not None:
+        base_start = since or (
+            datetime.now(timezone.utc)
+            - timedelta(days=int(settings.section("analyze").get("window_days", 30)))
+        )
+        base_end = until or datetime.now(timezone.utc)
+        analysis, _ = compare_periods(
+            store, settings, umap, base_start, base_end, vs_since, vs_until
+        )
+        return store, analysis
+
+    return store, run_analysis(store, settings, umap, since, until)
+
+
+def _add_period_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--from", dest="date_from", metavar="YYYY-MM-DD",
+                   help="start of the window (default: analyze.window_days before now)")
+    p.add_argument("--to", dest="date_to", metavar="YYYY-MM-DD",
+                   help="end of the window, inclusive (default: now)")
+    p.add_argument("--vs", metavar="prev",
+                   help="compare against the equally long period immediately before")
+    p.add_argument("--vs-from", metavar="YYYY-MM-DD", help="start of the comparison period")
+    p.add_argument("--vs-to", metavar="YYYY-MM-DD", help="end of the comparison period, inclusive")
 
 
 def cmd_analyze(args: argparse.Namespace) -> int:
     settings = load_settings()
-    store, analysis = _load_analysis(settings)
+    store, analysis = _load_analysis(settings, args)
     try:
         print(
-            f"\nLast {analysis.window_days} days · {analysis.total_jobs:,} jobs · "
+            f"\n{analysis.period_label} · {analysis.total_jobs:,} jobs · "
             f"{_fmt_seconds(analysis.total_seconds)} QPU · "
             f"{analysis.coverage * 100:.0f}% circuits retrieved"
         )
@@ -243,6 +408,43 @@ def cmd_analyze(args: argparse.Namespace) -> int:
             for finding in user.findings[:3]:
                 print(f"          - {finding}")
         print()
+
+        if analysis.comparison:
+            c = analysis.comparison
+            a_label = f"{c.a_start:%Y-%m-%d}~{c.a_end:%Y-%m-%d}"
+            b_label = f"{c.b_start:%Y-%m-%d}~{c.b_end:%Y-%m-%d}"
+            print(f"Period comparison   A: {a_label}   B: {b_label}")
+            header = (
+                f"{'user':<22} {'QPU A':>9} {'QPU B':>9} {'change':>10} "
+                f"{'waste A':>9} {'waste B':>9} {'jobs A':>7} {'jobs B':>7}"
+            )
+            print(header)
+            print("-" * len(header))
+            for d in c.users[: args.top]:
+                ratio = d.seconds_ratio
+                if ratio is None:
+                    change = "—"
+                elif ratio == float("inf"):
+                    change = "new"
+                else:
+                    change = f"{ratio:.2f}x"
+                print(
+                    f"{d.label[:22]:<22} {_fmt_seconds(d.seconds_a):>9} "
+                    f"{_fmt_seconds(d.seconds_b):>9} {change:>10} "
+                    f"{_fmt_seconds(d.waste_a):>9} {_fmt_seconds(d.waste_b):>9} "
+                    f"{d.jobs_a:>7} {d.jobs_b:>7}"
+                )
+            total_change = c.total_ratio
+            shown = (
+                "—" if total_change is None
+                else ("new" if total_change == float("inf") else f"{total_change:.2f}x")
+            )
+            print("-" * len(header))
+            print(
+                f"{'total':<22} {_fmt_seconds(c.total_a):>9} {_fmt_seconds(c.total_b):>9} "
+                f"{shown:>10}"
+            )
+            print()
 
         if not args.no_queue:
             from .queueimpact import analyze_queue
@@ -275,7 +477,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
 
 def cmd_report(args: argparse.Namespace) -> int:
     settings = load_settings()
-    store, analysis = _load_analysis(settings)
+    store, analysis = _load_analysis(settings, args)
     try:
         out = Path(args.out) if args.out else default_report_path(settings.root)
         write_report(analysis, store, out, settings.section("report"))
@@ -441,7 +643,21 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="break usage down per instance instead of per month",
     )
+    p.add_argument(
+        "--by-backend",
+        action="store_true",
+        help="break usage down per QPU, with a ranking of the busiest backends",
+    )
     p.set_defaults(func=cmd_usage)
+
+    p = sub.add_parser("instances", help="list configured instances; --discover finds more")
+    p.add_argument(
+        "--discover",
+        action="store_true",
+        help="search the IBM Cloud account for Qiskit Runtime instances and add new ones",
+    )
+    p.add_argument("--dry-run", action="store_true", help="show what would be added, write nothing")
+    p.set_defaults(func=cmd_instances)
 
     p = sub.add_parser("reindex", help="recompute fingerprints from stored payloads (no API calls)")
     p.set_defaults(func=cmd_reindex)
@@ -449,11 +665,13 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("analyze", help="console summary")
     p.add_argument("--top", type=int, default=15, help="users to display")
     p.add_argument("--no-queue", action="store_true", help="skip the queue impact analysis")
+    _add_period_args(p)
     p.set_defaults(func=cmd_analyze)
 
     p = sub.add_parser("report", help="generate the HTML report")
     p.add_argument("-o", "--out", help="output path (default reports/qpu-audit-<timestamp>.html)")
     p.add_argument("--csv", action="store_true", help="also write a CSV alongside it")
+    _add_period_args(p)
     p.set_defaults(func=cmd_report)
 
     p = sub.add_parser("users", help="list observed user IDs and resolve names")
@@ -486,6 +704,9 @@ def main(argv: list[str] | None = None) -> int:
     _setup_logging(args.verbose)
     try:
         return int(args.func(args))
+    except ValueError as exc:
+        print(f"\n[bad argument] {exc}\n", file=sys.stderr)
+        return 2
     except ConfigError as exc:
         print(f"\n[configuration error] {exc}\n", file=sys.stderr)
         return 2

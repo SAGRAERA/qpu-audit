@@ -26,6 +26,16 @@ def _fmt_seconds(seconds: float) -> str:
     return f"{seconds:.1f}s"
 
 
+def num(display: Any, sort: Any, extra: str = "") -> str:
+    """A numeric cell that sorts on its underlying value.
+
+    The rendered text carries units, thousands separators and, for some cells, four
+    languages at once — none of which sort correctly. ``data-sort`` keeps the
+    ordering tied to the number.
+    """
+    return f'<td class="num" data-sort="{sort}"{extra}>{display}</td>'
+
+
 def build(esc, tr, trm):
     """Return the section renderers bound to the escaping/translation helpers."""
 
@@ -204,79 +214,196 @@ def build(esc, tr, trm):
   <th class="num">{ledger.grand_total() / 3600:.2f}</th><th></th></tr></tfoot>
 </table></div>"""
 
-    def instance_section(breakdown: Any) -> str:
-        if not breakdown or not breakdown.instances:
+    def compare_section(comparison: Any) -> str:
+        """Two periods side by side."""
+        if not comparison or not comparison.users:
             return ""
-        head = "".join(
-            f"<th>{esc(breakdown.instance_name(crn))}</th>" for crn in breakdown.instances
-        )
+
+        def change_cell(ratio: float | None, only_a: bool, only_b: bool) -> str:
+            if ratio == float("inf") or only_a:
+                return f'<td><span class="up">{tr("cmp_only_a")}</span></td>'
+            if ratio is None:
+                return '<td><span style="opacity:.35">—</span></td>'
+            if only_b:
+                return f'<td><span class="down">{tr("cmp_only_b")}</span></td>'
+            cls = "up" if ratio > 1 else ("down" if ratio < 1 else "")
+            arrow = "▲" if ratio > 1 else ("▼" if ratio < 1 else "")
+            return f'<td><span class="{cls}">{arrow} {ratio:.2f}x</span></td>'
+
+        rows = []
+        for d in comparison.users[:25]:
+            rows.append(
+                "<tr>"
+                f"<td>{esc(d.label)}</td>"
+                f'<td class="hash">{esc(d.user_id)}</td>'
+                f'<td class="num">{_fmt_seconds(d.seconds_a)}</td>'
+                f'<td class="num">{_fmt_seconds(d.seconds_b)}</td>'
+                + change_cell(d.seconds_ratio, d.seconds_b <= 0 < d.seconds_a,
+                              d.seconds_a <= 0 < d.seconds_b)
+                + f'<td class="num">{_fmt_seconds(d.waste_a)}</td>'
+                f'<td class="num">{_fmt_seconds(d.waste_b)}</td>'
+                f'<td class="num">{d.jobs_a}</td>'
+                f'<td class="num">{d.jobs_b}</td>'
+                "</tr>"
+            )
+
+        total_ratio = comparison.total_ratio
+        if total_ratio is None:
+            total_change = "—"
+        elif total_ratio == float("inf"):
+            total_change = "—"
+        else:
+            total_change = f"{total_ratio:.2f}x"
+
+        a = f"{comparison.a_start:%Y-%m-%d} → {comparison.a_end:%Y-%m-%d}"
+        b = f"{comparison.b_start:%Y-%m-%d} → {comparison.b_end:%Y-%m-%d}"
+        return f"""
+<h2>{tr('h_compare')}</h2>
+<p class="sub">{tr('cmp_periods', a=a, b=b)}<br>{tr('p_compare')}</p>
+<div class="scroll"><table>
+<thead><tr><th>{tr('th_user')}</th><th>{tr('th_userid')}</th>
+  <th>{tr('th_qpu_a')}</th><th>{tr('th_qpu_b')}</th><th>{tr('th_change')}</th>
+  <th>{tr('th_waste_a')}</th><th>{tr('th_waste_b')}</th>
+  <th>{tr('th_jobs_a')}</th><th>{tr('th_jobs_b')}</th></tr></thead>
+<tbody>{"".join(rows)}</tbody>
+<tfoot><tr><th colspan="2">{tr('cmp_total')}</th>
+  <th class="num">{_fmt_seconds(comparison.total_a)}</th>
+  <th class="num">{_fmt_seconds(comparison.total_b)}</th>
+  <th>{esc(total_change)}</th><th colspan="4"></th></tr></tfoot>
+</table></div>"""
+
+    def _matrix(breakdown: Any, heading_key: str, intro_key: str, total_key: str) -> str:
+        """User x key matrix. Shared by the instance and backend sections."""
+        if not breakdown or not breakdown.keys:
+            return ""
+        head = "".join(f"<th>{esc(breakdown.key_label(k))}</th>" for k in breakdown.keys)
         rows = []
         grand = breakdown.grand_total()
         for user in breakdown.users[:25]:
             cells = ""
-            for crn in breakdown.instances:
-                seconds = breakdown.seconds(user, crn)
+            for key in breakdown.keys:
+                seconds = breakdown.seconds(user, key)
                 if seconds:
-                    share = breakdown.user_share_of(user, crn)
+                    share = breakdown.user_share_of(user, key)
                     emphasis = ' style="font-weight:600"' if share >= 0.5 else ""
-                    cells += (
-                        f'<td class="num"{emphasis}>{seconds / 3600:.2f}'
-                        f'<span class="sub" style="font-size:11px"> {share * 100:.0f}%</span></td>'
+                    cells += num(
+                        f'{seconds / 3600:.2f}<span class="sub" style="font-size:11px"> '
+                        f"{share * 100:.0f}%</span>",
+                        f"{seconds:.3f}",
+                        emphasis,
                     )
                 else:
-                    cells += '<td class="num" style="opacity:.35">—</td>'
+                    cells += '<td class="num" data-sort="0" style="opacity:.35">—</td>'
             total = breakdown.user_total(user)
             rows.append(
                 "<tr>"
-                f"<td>{esc(breakdown.labels.get(user) or user)}</td>"
+                f'<td data-sort="{esc(breakdown.labels.get(user) or user)}">'
+                f"{esc(breakdown.labels.get(user) or user)}</td>"
                 f'<td class="hash">{esc(user)}</td>'
                 f"{cells}"
-                f'<td class="num"><b>{total / 3600:.2f}</b>'
-                f'<span class="sub" style="font-size:11px"> '
-                f'{total / grand * 100 if grand else 0:.0f}%</span></td>'
-                "</tr>"
+                + num(
+                    f"<b>{total / 3600:.2f}</b>"
+                    f'<span class="sub" style="font-size:11px"> '
+                    f"{total / grand * 100 if grand else 0:.0f}%</span>",
+                    f"{total:.3f}",
+                )
+                + "</tr>"
             )
         totals = "".join(
-            f'<td class="num">{breakdown.instance_total(crn) / 3600:.2f}</td>'
-            for crn in breakdown.instances
+            f'<td class="num">{breakdown.key_total(k) / 3600:.2f}</td>' for k in breakdown.keys
         )
         return f"""
-<h2>{tr('h_instance')}</h2>
-<p class="sub">{tr('p_instance')}</p>
-<div class="scroll"><table>
+<h2>{tr(heading_key)}</h2>
+<p class="sub">{tr(intro_key)}</p>
+<div class="scroll"><table class="sortable">
 <thead><tr><th>{tr('th_user')}</th><th>{tr('th_userid')}</th>{head}
   <th>{tr('th_total')}</th></tr></thead>
 <tbody>{"".join(rows)}</tbody>
-<tfoot><tr><th colspan="2">{tr('th_instance_total')}</th>{totals}
+<tfoot><tr><th colspan="2">{tr(total_key)}</th>{totals}
   <th class="num">{grand / 3600:.2f}</th></tr></tfoot>
-</table></div>"""
+</table></div>
+<p class="sorthint">{tr('sort_hint')}</p>"""
+
+    def instance_section(breakdown: Any) -> str:
+        return _matrix(breakdown, "h_instance", "p_instance", "th_instance_total")
+
+    def backend_ranking(breakdown: Any) -> str:
+        """Which QPU absorbed the most time, and who took it."""
+        if not breakdown or not breakdown.keys:
+            return ""
+        rows = []
+        for i, key in enumerate(breakdown.keys, start=1):
+            total = breakdown.key_total(key)
+            users = breakdown.key_users(key)
+            top = breakdown.top_user_of(key)
+            if top:
+                top_id, top_share = top
+                top_cell = (
+                    f'<td data-sort="{top_share:.6f}">'
+                    f"{esc(breakdown.labels.get(top_id) or top_id)}"
+                    f'<span class="sub" style="font-size:11px"> {top_share * 100:.0f}%</span></td>'
+                )
+            else:
+                top_cell = '<td data-sort="-1">—</td>'
+            jobs = sum(breakdown.jobs.get((u, key), 0) for u in users)
+            rows.append(
+                "<tr>"
+                f'<td class="rownum">{i}</td>'
+                f'<td data-sort="{esc(breakdown.key_label(key))}">'
+                f"<b>{esc(breakdown.key_label(key))}</b></td>"
+                + num(f"{total / 3600:.2f}", f"{total:.3f}")
+                + num(f"{breakdown.key_share(key) * 100:.1f}%", f"{breakdown.key_share(key):.6f}")
+                + num(f"{jobs:,}", jobs)
+                + num(len(users), len(users))
+                + top_cell
+                + "</tr>"
+            )
+        return f"""
+<h2>{tr('h_backend_rank')}</h2>
+<p class="sub">{tr('p_backend_rank')}</p>
+<div class="scroll"><table class="sortable">
+<thead><tr><th>{tr('th_num')}</th><th>{tr('th_backend')}</th><th>{tr('th_qpu_hours')}</th>
+  <th>{tr('th_share')}</th><th>{tr('th_jobs')}</th><th>{tr('th_users_on')}</th>
+  <th>{tr('th_top_user')}</th></tr></thead>
+<tbody>{"".join(rows)}</tbody>
+</table></div>
+<p class="sorthint">{tr('sort_hint')}</p>"""
+
+    def backend_section(breakdown: Any) -> str:
+        return _matrix(breakdown, "h_backend", "p_backend", "th_backend_total")
 
     def queue_section(impacts: list[QueueImpact], labels: dict[str, str]) -> str:
         if not impacts:
             return ""
         rows = "".join(
             "<tr>"
-            f"<td>{i + 1}</td>"
-            f"<td>{esc(labels.get(q.user_id) or q.user_id)}</td>"
+            f'<td class="rownum">{i + 1}</td>'
+            f'<td data-sort="{esc(labels.get(q.user_id) or q.user_id)}">'
+            f"{esc(labels.get(q.user_id) or q.user_id)}</td>"
             f'<td class="hash">{esc(q.user_id)}</td>'
-            f'<td class="num">{q.jobs:,}</td>'
-            f'<td class="num">{q.qpu_hours:.2f}h</td>'
-            f'<td class="num"><b>{q.others_wait_overlap_hours:.1f}h</b></td>'
-            f'<td class="num">{q.blocking_share * 100:.1f}%</td>'
-            f'<td class="num">{q.others_jobs_affected:,}</td>'
-            f'<td class="num">{q.others_users_affected}</td>'
-            f'<td class="num">{q.max_concurrent}</td>'
-            f'<td class="num">{q.max_burst}</td>'
-            f'<td class="num">'
-            f'{"—" if q.median_gap_seconds is None else f"{q.median_gap_seconds:.1f}s"}</td>'
-            f'<td class="num">{q.containers}</td>'
-            "</tr>"
+            + num(f"{q.jobs:,}", q.jobs)
+            + num(f"{q.qpu_hours:.2f}h", f"{q.qpu_hours:.4f}")
+            + num(
+                f"<b>{q.others_wait_overlap_hours:.1f}h</b>",
+                f"{q.others_wait_overlap_hours:.4f}",
+            )
+            + num(f"{q.blocking_share * 100:.1f}%", f"{q.blocking_share:.6f}")
+            + num(f"{q.others_jobs_affected:,}", q.others_jobs_affected)
+            + num(q.others_users_affected, q.others_users_affected)
+            + num(q.max_concurrent, q.max_concurrent)
+            + num(q.max_burst, q.max_burst)
+            + num(
+                "—" if q.median_gap_seconds is None else f"{q.median_gap_seconds:.1f}s",
+                -1 if q.median_gap_seconds is None else f"{q.median_gap_seconds:.3f}",
+            )
+            + num(q.containers, q.containers)
+            + "</tr>"
             for i, q in enumerate(impacts[:15])
         )
         return f"""
 <h2>{tr('h_queue')}</h2>
 <p class="sub">{tr('p_queue')}</p>
-<div class="scroll"><table>
+<div class="scroll"><table class="sortable">
 <thead><tr>
   <th>{tr('th_num')}</th><th>{tr('th_user')}</th><th>{tr('th_userid')}</th>
   <th>{tr('th_jobs')}</th><th>{tr('th_qpu_held')}</th><th>{tr('th_delay')}</th>
@@ -287,7 +414,8 @@ def build(esc, tr, trm):
 </table></div>
 <div class="legend">
   <span>{tr('lg_delay')}</span><span>{tr('lg_burst')}</span><span>{tr('lg_containers')}</span>
-</div>"""
+</div>
+<p class="sorthint">{tr('sort_hint')}</p>"""
 
     def family_block(families: list[FamilyDiff]) -> str:
         usable = [f for f in families if f.circuits_compared >= 2]
@@ -438,33 +566,42 @@ def build(esc, tr, trm):
 
     def ranking_row(index: int, u: UserReport) -> str:
         if u.top_instance:
-            top_cell = (
-                f'<td class="num">{u.top_instance_share * 100:.0f}%'
-                f'<span class="sub" style="font-size:11px"> {esc(u.top_instance)}</span></td>'
+            top_cell = num(
+                f'{u.top_instance_share * 100:.0f}%'
+                f'<span class="sub" style="font-size:11px"> {esc(u.top_instance)}</span>',
+                f"{u.top_instance_share:.6f}",
             )
         else:
-            top_cell = '<td class="num" style="opacity:.35">—</td>'
+            top_cell = '<td class="num" data-sort="-1" style="opacity:.35">—</td>'
         return (
             "<tr>"
-            f"<td>{index}</td>"
-            f"<td>{esc(u.label)}</td>"
+            f'<td class="rownum">{index}</td>'
+            f'<td data-sort="{esc(u.label)}">{esc(u.label)}</td>'
             f'<td class="hash">{esc(u.user_id)}</td>'
-            f'<td class="num"><b>{u.score:.0f}</b></td>'
-            f'<td class="num">{u.jobs}</td>'
-            f'<td class="num">{_fmt_seconds(u.seconds)}</td>'
-            f'<td class="num">{u.instance_share * 100:.1f}%</td>'
-            f"{top_cell}"
-            f'<td class="num"><b>{_fmt_seconds(u.flagged_waste_seconds)}</b></td>'
-            f'<td class="num">{u.waste_share * 100:.1f}%</td>'
-            f'<td class="num">{u.unique_ratio * 100:.0f}%</td>'
-            f'<td class="num">{u.top_circuit_share * 100:.0f}%</td>'
-            f'<td class="num">'
-            f'{f"{u.interval_cv:.2f}" if u.interval_cv is not None else "—"}</td>'
-            "</tr>"
+            + num(f"<b>{u.score:.0f}</b>", f"{u.score:.2f}")
+            + num(u.jobs, u.jobs)
+            + num(_fmt_seconds(u.seconds), f"{u.seconds:.3f}")
+            + num(f"{u.instance_share * 100:.1f}%", f"{u.instance_share:.6f}")
+            + top_cell
+            + num(
+                f"<b>{_fmt_seconds(u.flagged_waste_seconds)}</b>",
+                f"{u.flagged_waste_seconds:.3f}",
+            )
+            + num(f"{u.waste_share * 100:.1f}%", f"{u.waste_share:.6f}")
+            + num(f"{u.unique_ratio * 100:.0f}%", f"{u.unique_ratio:.6f}")
+            + num(f"{u.top_circuit_share * 100:.0f}%", f"{u.top_circuit_share:.6f}")
+            + num(
+                f"{u.interval_cv:.2f}" if u.interval_cv is not None else "—",
+                -1 if u.interval_cv is None else f"{u.interval_cv:.4f}",
+            )
+            + "</tr>"
         )
 
     return {
         "badge": badge,
+        "compare_section": compare_section,
+        "backend_ranking": backend_ranking,
+        "backend_section": backend_section,
         "usage_section": usage_section,
         "instance_section": instance_section,
         "queue_section": queue_section,

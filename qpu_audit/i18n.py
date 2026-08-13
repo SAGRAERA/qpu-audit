@@ -216,6 +216,58 @@ STRINGS: dict[str, dict[str, str]] = {
     },
     "chg_new": {"en": "new", "ko": "신규", "ja": "新規", "es": "nuevo"},
     "chg_est": {"en": "est.", "ko": "예상", "ja": "推定", "es": "est."},
+    # -- period comparison -------------------------------------------------
+    "h_compare": {
+        "en": "Period comparison", "ko": "기간 비교",
+        "ja": "期間の比較", "es": "Comparación de periodos",
+    },
+    "p_compare": {
+        "en": "Both periods go through the same analysis, so <b>A</b> and <b>B</b> are directly "
+              "comparable — the change column reflects verdicts, not raw usage. A user present "
+              "in only one period still appears, because someone starting or stopping is "
+              "exactly the change worth seeing. Remember that a period predating your first "
+              "<code>collect</code> will read as empty rather than as zero usage.",
+        "ko": "두 기간을 같은 분석에 통과시키므로 <b>A</b>와 <b>B</b>를 바로 비교할 수 있습니다 — "
+              "변화 열은 단순 사용량이 아니라 판정을 반영합니다. 한쪽 기간에만 있는 사용자도 "
+              "표시됩니다. 누가 시작했거나 멈춘 것이야말로 봐야 할 변화이기 때문입니다. "
+              "첫 <code>collect</code> 이전 기간은 사용량 0이 아니라 데이터 없음으로 나온다는 점에 "
+              "유의하세요.",
+        "ja": "両期間を同じ解析にかけているため <b>A</b> と <b>B</b> は直接比較できます。変化列は"
+              "単純な使用量ではなく判定を反映します。片方の期間にしか存在しない利用者も表示され"
+              "ます。誰かが始めた／やめたことこそ見るべき変化だからです。最初の "
+              "<code>collect</code> より前の期間は、使用量ゼロではなくデータなしとして出ます。",
+        "es": "Ambos periodos pasan por el mismo análisis, así que <b>A</b> y <b>B</b> son "
+              "directamente comparables — la columna de cambio refleja veredictos, no uso en "
+              "bruto. Un usuario presente en solo un periodo también aparece, porque que "
+              "alguien empiece o pare es justo el cambio que interesa. Ten en cuenta que un "
+              "periodo anterior a tu primer <code>collect</code> aparecerá vacío, no como uso "
+              "cero.",
+    },
+    "th_qpu_a": {"en": "QPU (A)", "ko": "QPU (A)", "ja": "QPU (A)", "es": "QPU (A)"},
+    "th_qpu_b": {"en": "QPU (B)", "ko": "QPU (B)", "ja": "QPU (B)", "es": "QPU (B)"},
+    "th_change": {"en": "Change", "ko": "변화", "ja": "変化", "es": "Cambio"},
+    "th_waste_a": {
+        "en": "Unexplained (A)", "ko": "설명불가 (A)",
+        "ja": "説明なし (A)", "es": "Sin explicar (A)",
+    },
+    "th_waste_b": {
+        "en": "Unexplained (B)", "ko": "설명불가 (B)",
+        "ja": "説明なし (B)", "es": "Sin explicar (B)",
+    },
+    "th_jobs_a": {"en": "Jobs (A)", "ko": "jobs (A)", "ja": "ジョブ (A)", "es": "Trabajos (A)"},
+    "th_jobs_b": {"en": "Jobs (B)", "ko": "jobs (B)", "ja": "ジョブ (B)", "es": "Trabajos (B)"},
+    "cmp_periods": {
+        "en": "A: {a} · B: {b}", "ko": "A: {a} · B: {b}",
+        "ja": "A: {a} · B: {b}", "es": "A: {a} · B: {b}",
+    },
+    "cmp_total": {"en": "Total", "ko": "합계", "ja": "合計", "es": "Total"},
+    "cmp_only_a": {
+        "en": "only in A", "ko": "A 에만 있음", "ja": "A のみ", "es": "solo en A",
+    },
+    "cmp_only_b": {
+        "en": "gone in A", "ko": "A 에서 사라짐", "ja": "A では消滅", "es": "ausente en A",
+    },
+
     # -- per instance ------------------------------------------------------
     "h_instance": {
         "en": "Usage by instance", "ko": "인스턴스별 사용량",
@@ -238,6 +290,63 @@ STRINGS: dict[str, dict[str, str]] = {
               "letra pequeña. Ambas vistas importan: las columnas por instancia revelan a quien "
               "monopoliza una sola instancia, mientras que la columna <b>total</b> revela a quien "
               "se reparte entre todas y aun así domina la cuenta. Ninguna se ve desde la otra.",
+    },
+    # -- backends ----------------------------------------------------------
+    "h_backend_rank": {
+        "en": "QPU ranking", "ko": "QPU 랭킹",
+        "ja": "QPU ランキング", "es": "Clasificación de QPU",
+    },
+    "p_backend_rank": {
+        "en": "Which QPU absorbed the most time, and how concentrated that use was. A high "
+              "top-user share means one person effectively owns that machine — worth knowing "
+              "before anyone else plans work on it.",
+        "ko": "어떤 QPU 가 시간을 가장 많이 흡수했고, 그 사용이 얼마나 한쪽에 몰렸는지 봅니다. "
+              "최다 사용자 비중이 높으면 사실상 그 장비를 한 사람이 점유하고 있다는 뜻이라, "
+              "다른 사람이 그 장비로 작업을 계획하기 전에 알아둘 값입니다.",
+        "ja": "どの QPU が最も時間を消費し、その利用がどれだけ偏っているかを示します。最多利用者の"
+              "比率が高ければ、その装置は実質的に一人が占有していることになり、他の人がその装置で"
+              "作業を計画する前に知っておくべき値です。",
+        "es": "Qué QPU absorbió más tiempo y cuán concentrado estuvo ese uso. Una cuota alta del "
+              "usuario principal significa que una persona ocupa esa máquina en la práctica — "
+              "conviene saberlo antes de que otros planifiquen trabajo en ella.",
+    },
+    "sort_hint": {
+        "en": "Click any column heading to re-rank the table by it.",
+        "ko": "열 제목을 누르면 그 기준으로 순위가 다시 매겨집니다.",
+        "ja": "列見出しをクリックすると、その基準で並べ替わります。",
+        "es": "Haz clic en cualquier encabezado de columna para reordenar la tabla.",
+    },
+    "th_qpu_hours": {
+        "en": "QPU hours", "ko": "QPU 시간", "ja": "QPU 時間", "es": "Horas de QPU",
+    },
+    "th_users_on": {
+        "en": "Users", "ko": "사용자 수", "ja": "利用者数", "es": "Usuarios",
+    },
+    "th_top_user": {
+        "en": "Heaviest user", "ko": "최다 사용자",
+        "ja": "最多利用者", "es": "Usuario principal",
+    },
+    "h_backend": {
+        "en": "Usage by QPU", "ko": "QPU 별 사용량",
+        "ja": "QPU 別使用量", "es": "Uso por QPU",
+    },
+    "p_backend": {
+        "en": "QPU hours per user per backend, with that backend's share in small type. Reading "
+              "across a row shows whether someone spreads work over many machines or camps on "
+              "one; reading down a column shows whether a machine serves the group or one person.",
+        "ko": "사용자별·backend 별 QPU 시간이고, 작은 글씨는 해당 backend 내 점유율입니다. "
+              "가로로 읽으면 그 사람이 여러 장비에 분산하는지 한 장비에 눌러앉는지 보이고, "
+              "세로로 읽으면 그 장비가 그룹 전체를 위한 것인지 한 사람 것인지 보입니다.",
+        "ja": "ユーザー別・バックエンド別の QPU 時間で、小さい文字は当該バックエンド内の占有率です。"
+              "横に読めばその人が複数の装置に分散しているか一台に居座っているかが、縦に読めばその"
+              "装置がグループ全体のものか一人のものかが分かります。",
+        "es": "Horas de QPU por usuario y backend, con la cuota de ese backend en letra pequeña. "
+              "Leer una fila muestra si alguien reparte el trabajo entre varias máquinas o se "
+              "instala en una; leer una columna muestra si una máquina sirve al grupo o a una "
+              "sola persona.",
+    },
+    "th_backend_total": {
+        "en": "QPU total", "ko": "QPU 합계", "ja": "QPU 合計", "es": "Total del QPU",
     },
     "th_instance_total": {
         "en": "Instance total", "ko": "인스턴스 합계",

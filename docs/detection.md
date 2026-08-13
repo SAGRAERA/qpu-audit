@@ -135,24 +135,52 @@ Not counted:
 
 ## 6. Scoring
 
-Nine signals, weighted, capped at 100. Two classes:
+Nine signals, weighted, capped at 100, in **three** classes. An earlier version used
+two — actionable and context — and that turned out to conflate different questions.
 
-**Actionable** (30/15/10/5/5): unexplained repetition, single-circuit concentration,
-non-entangling circuits, failed resubmission, no session grouping.
+**waste (60)**: unexplained repetition 30, single-circuit concentration 15,
+non-entangling circuits 10, failed resubmission 5.
+Questions the work itself.
 
-**Context** (15/10/5/5): suspected overuse, usage spike, burst submission, mechanical
-intervals.
+**queue (20)**: burst submission 12, no session/batch grouping 8.
+Harms other users whether or not the work is legitimate.
+
+**context (20)**: suspected overuse 12, mechanical intervals 5, usage spike 3.
+Information only.
+
+The split between *waste* and *queue* matters because "is this work legitimate?" and
+"does this behaviour harm others?" have different answers and different remedies. A
+burst of a thousand jobs monopolises the queue even when the science is impeccable,
+and the fix — batching — does not question the science at all. Filing that under
+"context" understated it; filing it under "actionable" implied the work was suspect.
+
+Usage spike carries the lowest weight deliberately. A new user, a return from leave,
+or the start of a new project all produce large month-over-month ratios without
+indicating anything wrong, and the same information already appears in the monthly
+usage table.
 
 Context signals fire on legitimate large-scale work. A 7-qubit state tomography needs
 3⁷ = 2,187 circuits; running it maximises share, burst and interval regularity
 simultaneously without anything being wrong. They are rendered distinctly and are
 never sufficient grounds for action alone.
 
-Actionable signals derive only from groups that passed the verdict rules. Groups
-judged normal contribute zero regardless of run count. Grey groups contribute half.
+Waste signals derive only from groups that passed the verdict rules. Groups judged
+normal contribute zero regardless of run count. Grey groups contribute half.
 
 **Ranking uses absolute wasted seconds, not score.** Score is a ratio and a tiny user
-with a bad ratio will otherwise outrank someone burning actual hours.
+with a bad ratio will otherwise outrank someone burning actual hours. Report tables
+are sortable, so any other ordering is a click away.
+
+### Overuse across instances and QPUs
+
+The overuse signal takes whichever is worse: the share of the whole account, or the
+largest share held inside any single instance. Scoring only the account-wide share
+lets someone quietly monopolise a small instance; scoring only the per-instance share
+misses someone who took over every instance at once.
+
+The same asymmetry applies to backends, which is why the report ranks QPUs separately
+and shows each machine's heaviest user. A backend where one person holds 97% is a
+different operational fact from one shared by eight.
 
 ## 7. Queue impact
 

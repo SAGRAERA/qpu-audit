@@ -61,9 +61,9 @@ Either fix, then re-run `--sync`.
 
 ```csv
 user_id,label,note
-IBMid-693000MJMX,Jane Doe,tomography group
-IBMid-698000GHSS,John Smith,intern - ends in August
-IBMid-6A70004A13,,unidentified - only active at night
+IBMid-EXAMPLE001,Jane Doe,tomography group
+IBMid-EXAMPLE002,John Smith,visiting researcher
+IBMid-EXAMPLE003,,unidentified so far
 ```
 
 - `user_id` — exactly as the API returns it
